@@ -1,0 +1,135 @@
+#!/bin/sh
+#  #SBATCH -p preempt --qos=preempt
+# #SBATCH -p cca
+#  #SBATCH -C rome,ib
+#SBATCH -o Output.o%j   
+#SBATCH -e Errors.e%j
+#SBATCH --mail-user=zit2107@columbia.edu
+#SBATCH --mail-type=ALL
+#SBATCH -t 04-00:00:00
+
+#SBATCH -J cLH537
+##SBATCH -J cLH$SIM
+#SBATCH -n 28
+#SBATCH -C skylake
+
+module purge
+module load slurm
+module add gcc
+module load openmpi4
+module add lib/hdf5
+module add lib/gmp
+module add lib/fftw3
+module add lib/openblas
+module add lib/gsl
+module add matlab
+module add lib/healpix/3.40 
+module load modules-nix
+module load nix/ffmpeg
+module load nix/mplayer/1.4
+module load nix/x264/20191217-2245
+module load nix/mpv-with-scripts/0.32.0
+
+source /mnt/home/ztremitiere/my_venv
+SIM=537
+
+#generate partition folders
+#------------------------------------------------------------------------------------------------------------
+module load python3
+
+
+cosmology="$(sed -n 1p /mnt/ceph/users/lperez/ICsSAM/cLH$SIM/CosmoAstro_params.txt)"
+echo $cosmology
+cosmo=($cosmology)
+omega_m=${cosmo[0]}
+sigma_8=${cosmo[1]}
+boxsize="$(grep -Po '(Box              \K[^ ]{7})' /mnt/ceph/users/lperez/ICsSAM/cLH$SIM/ICs/2LPT.param)"
+boxsize=`echo "($boxsize/1000)" | bc -l`
+echo $boxsize
+Nparticles="$(grep -Po '(Nsample          \K[^ ]{3})' /mnt/ceph/users/lperez/ICsSAM/cLH$SIM/ICs/2LPT.param)"
+echo $Nparticles
+ 
+module load lib/hdf5/1.8.21
+module load lib/fftw2/2.1.5-openmpi4
+
+module load openmpi4 
+ 
+cd /mnt/ceph/users/camels/PUBLIC_RELEASE/Rockstar/CAMELS-SAM/LH_$SIM/Rockstar/
+
+mkdir /mnt/home/ztremitiere/ceph/ICsSAM
+
+mkdir /mnt/home/ztremitiere/ceph/ICsSAM/cLH$SIM
+
+mkdir /mnt/home/ztremitiere/ceph/ICsSAM/cLH$SIM/params_dump
+ 
+cd /mnt/home/ztremitiere/ceph/ICsSAM/cLH$SIM
+rawparticlemass="$(grep -Po '(Particle mass: \K[^ ]{7})' out_99.list)"
+cd /mnt/home/ztremitiere/ceph/ICsSAM/cLH$SIM
+
+PARTITION=0
+THRESHOLD_MASS="$rawparticlemass"E10
+echo $THRESHOLD_MASS
+totaldirs=$(ls -1 /mnt/ceph/users/camels/PUBLIC_RELEASE/Rockstar/CAMELS-SAM/LH_$SIM/ConsistentTrees/tree* | wc -l)
+subvols=$(bc -l <<< "scale=5; e(l($totaldirs)/3)")
+echo $subvols
+subvols=`echo "($subvols+0.6)/1" | bc`
+echo $subvols
+SUBVOLS=$subvols # how many subvolumes**3 files
+#define paths that stay the same
+
+IN_PATH=/mnt/ceph/users/lperez/ICsSAM/cLH$SIM/output/isotrees  # input file directory
+OUT_PATH=/mnt/ceph/users/ztremitiere/ICsSAM/cLH$SIM/params_dump
+
+LIB_PATH=/mnt/ceph/users/lperez/ForStudents_SAMemulator/tng-sam-LuciaUsed/gflib
+
+echo $SUBVOLS 
+
+for h in $(seq 0 $(($SUBVOLS - 1)))
+do
+  for j in $(seq 0 $(($SUBVOLS - 1)))
+  do
+    for k in $(seq 0 $(($SUBVOLS - 1)))
+    do
+      echo $h,$j,$k
+      mkdir $OUT_PATH/"${h}_${j}_${k}"
+    done
+  done
+done
+
+
+for i in `seq 0 4`
+do
+ simulation=i
+ 
+ #generate folders: sc-sam_i --> h_j_k
+ #-----------------------------------
+
+ mkdir /mnt/ceph/users/ztremitiere/ICsSAM/cLH$SIM/params_dump/sc-sam_$i
+ 
+ for h in $(seq 0 $(($SUBVOLS - 1)))
+ do
+  for j in $(seq 0 $(($SUBVOLS - 1)))
+  do
+   for k in $(seq 0 $(($SUBVOLS - 1)))
+   do
+    mkdir /mnt/home/ztremitiere/ceph/ICsSAM/cLH$SIM/params_dump/sc-sam_$i/${h}_${j}_${k} 
+   done
+  done
+ done 
+
+
+#-----------------------------------------------------------------------------
+SCRIPT_cosmo_PATH=/mnt/ceph/users/lperez/ForStudents_SAMemulator/tng-sam-LuciaUsed/SAM-Pipeline
+
+SAM_PATH=/mnt/ceph/users/lperez/ForStudents_SAMemulator/tng-sam-LuciaUsed/sc-sam 
+#run the gen params python file
+python3 /mnt/home/ztremitiere/gen_params_Sept.py cLH$SIM $SUBVOLS $THRESHOLD_MASS $PARTITION $LIB_PATH $IN_PATH $OUT_PATH
+
+cd /mnt/home/ztremitiere/ceph/ICsSAM/cLH$SIM/params_dump/sc-sam_$i
+ 
+OUT_PATH_TWO=/mnt/ceph/users/ztremitiere/ICsSAM/cLH$SIM/params_dump/sc-sam_$i
+
+#run the sam
+python3 $SCRIPT_cosmo_PATH/running/run_SAM_multi_allpartitions.py cLH$SIM $PARTITION $OUT_PATH_TWO $SAM_PATH $SUBVOLS
+
+done
